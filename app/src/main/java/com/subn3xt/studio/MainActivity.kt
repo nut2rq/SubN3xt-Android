@@ -36,6 +36,13 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.mlkit.common.model.DownloadConditions
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
 private val Ink=Color(0xFF0B1020); private val Panel=Color(0xFF151D31); private val Violet=Color(0xFF8B7CFF); private val Mint=Color(0xFF54E0C1)
 private const val MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true"
@@ -73,11 +80,38 @@ private suspend fun ensureModel(ctx:Context,onProgress:(Int)->Unit):File = withC
  } catch(e:Exception){temp.delete();throw e} finally{connection?.disconnect()}
 }
 private fun msToSrt(ms:Long):String {val x=ms.coerceAtLeast(0);return "%02d:%02d:%02d,%03d".format(x/3600000,(x%3600000)/60000,(x%60000)/1000,x%1000)}
+private fun parseSrtTime(value:String):Long? {
+ val m=Regex("^(\\d{2,}):(\\d{2}):(\\d{2})[,.](\\d{3})$").matchEntire(value.trim()) ?: return null
+ val (h,mi,se,ms)=m.destructured
+ val hh=h.toLongOrNull()?:return null; val mm=mi.toLongOrNull()?:return null
+ val ss=se.toLongOrNull()?:return null; val milli=ms.toLongOrNull()?:return null
+ if(mm>59||ss>59)return null
+ return ((hh*3600+mm*60+ss)*1000+milli)
+}
+private fun buildSrt(cues:List<Cue>):String {
+ require(cues.isNotEmpty()) { "No subtitle lines to export" }
+ return cues.mapIndexed { index,cue ->
+  val start=parseSrtTime(cue.start) ?: throw IllegalArgumentException("Line ${index+1}: invalid start timestamp")
+  val end=parseSrtTime(cue.end) ?: throw IllegalArgumentException("Line ${index+1}: invalid end timestamp")
+  require(end>start) { "Line ${index+1}: end time must be after start time" }
+  require(cue.text.isNotBlank()) { "Line ${index+1}: subtitle text is empty" }
+  "${index+1}\\n${msToSrt(start)} --> ${msToSrt(end)}\\n${cue.text.trim()}\\n"
+ }.joinToString("\\n")
+}
+private suspend fun translateChineseToThai(text:String):String = suspendCoroutine { continuation ->
+ val translator=Translation.getClient(TranslatorOptions.Builder()
+  .setSourceLanguage(TranslateLanguage.CHINESE).setTargetLanguage(TranslateLanguage.THAI).build())
+ translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
+  .addOnSuccessListener { translator.translate(text).addOnSuccessListener { result ->
+   translator.close(); continuation.resume(result)
+  }.addOnFailureListener { error -> translator.close(); continuation.resumeWithException(error) } }
+  .addOnFailureListener { error -> translator.close(); continuation.resumeWithException(error) }
+}
 
 @Composable fun SubN3xtApp(ctx:Context){
  var projects by remember{mutableStateOf(loadProjects(ctx))};var selected by remember{mutableStateOf<MediaProject?>(null)}
  var tab by remember{mutableStateOf("Home")};var cues by remember{mutableStateOf(listOf(Cue()))};var notice by remember{mutableStateOf("")}
- var language by remember{mutableStateOf("auto")};var busy by remember{mutableStateOf(false)};var progress by remember{mutableIntStateOf(0)};var status by remember{mutableStateOf("")}
+ var language by remember{mutableStateOf("auto")};var translating by remember{mutableStateOf(false)};var busy by remember{mutableStateOf(false)};var progress by remember{mutableIntStateOf(0)};var status by remember{mutableStateOf("")}
  val scope=rememberCoroutineScope()
  val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri:Uri?->if(uri!=null){
   try{ctx.contentResolver.takePersistableUriPermission(uri,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)}catch(_:Exception){}
@@ -87,6 +121,13 @@ private fun msToSrt(ms:Long):String {val x=ms.coerceAtLeast(0);return "%02d:%02d
   val s=cues.mapIndexed{i,c->"${i+1}\n${c.start}\n${c.end}\n${c.text}\n"}.joinToString("\n")
   ctx.contentResolver.openOutputStream(uri)?.use{it.write(s.toByteArray(Charsets.UTF_8))};notice="SRT exported"
  }catch(e:Exception){notice="Export error: ${e.message}"}}
+ fun translateAll(){ if(cues.isEmpty()||translating)return; scope.launch {
+  translating=true
+  try { val translated=withContext(Dispatchers.IO){ cues.map { cue -> cue.copy(text=if(cue.text.isBlank()) "" else translateChineseToThai(cue.text)) } }
+   cues=translated; notice="แปลภาษาจีนเป็นภาษาไทยเสร็จแล้ว"
+  } catch(e:Exception){ notice="Translation failed: ${e.message?:e.javaClass.simpleName}" }
+  finally { translating=false }
+ }}
  fun importAudio(){picker.launch(arrayOf("audio/wav","audio/x-wav","audio/mpeg","audio/mp3","audio/flac"))}
  fun transcribe(){val project=selected?:return;scope.launch{
   busy=true;progress=0;status="Preparing audio…";var modelHandle:dev.ffmpegkit.whisper.WhisperModel?=null;var audioFile:File?=null
@@ -111,7 +152,7 @@ private fun msToSrt(ms:Long):String {val x=ms.coerceAtLeast(0);return "%02d:%02d
   }}}){pad->when(tab){
    "Home"->HomeScreen(Modifier.padding(pad),projects.size){importAudio()}
    "Projects"->ProjectsScreen(Modifier.padding(pad),projects,{p->selected=p;cues=listOf(Cue());tab="Editor"},{importAudio()},{p->projects=projects.filterNot{it.id==p.id};saveProjects(ctx,projects);if(selected?.id==p.id)selected=null})
-   "Editor"->EditorScreen(Modifier.padding(pad),selected,cues,{cues=it},{importAudio()},{transcribe()},{exporter.launch((selected?.name?:"subtitles").substringBeforeLast('.')+".srt")},language,{language=it},busy,progress,status)
+   "Editor"->EditorScreen(Modifier.padding(pad),selected,cues,{cues=it},{importAudio()},{transcribe()},{translateAll()},translating,{exporter.launch((selected?.name?:"subtitles").substringBeforeLast('.')+".srt")},language,{language=it},busy,progress,status)
    else->Column(Modifier.padding(pad).fillMaxSize().padding(24.dp),verticalArrangement=Arrangement.Center,horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Rounded.Settings,null,tint=Mint,modifier=Modifier.size(48.dp));Text("SubN3xt Studio",fontSize=24.sp);Text("Whisper runs locally after model download.",color=Color.LightGray)}
   }}
   if(notice.isNotBlank()){LaunchedEffect(notice){kotlinx.coroutines.delay(3200);notice=""};Surface(color=Color(0xFF26334D),shape=RoundedCornerShape(12.dp),modifier=Modifier.padding(12.dp)){Text(notice,color=Color.White,modifier=Modifier.padding(14.dp))}}
@@ -132,7 +173,7 @@ private fun saveProjects(c:Context,ps:List<MediaProject>){val a=JSONArray();ps.f
  Column(modifier.fillMaxSize().padding(18.dp)){Text("Projects",fontSize=30.sp,fontWeight=FontWeight.Bold);Text("${ps.size} saved projects",color=Color.LightGray);Button(onClick=add,modifier=Modifier.fillMaxWidth().padding(vertical=12.dp)){Icon(Icons.Rounded.Add,null);Text(" Import audio")}
  LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)){items(ps,key={it.id}){p->Surface(color=Panel,shape=RoundedCornerShape(14.dp)){Row(Modifier.padding(12.dp),verticalAlignment=Alignment.CenterVertically){Icon(Icons.Rounded.AudioFile,null,tint=Mint);Spacer(Modifier.width(10.dp));Text(p.name,color=Color.White,modifier=Modifier.weight(1f));IconButton(onClick={open(p)}){Icon(Icons.Rounded.Edit,null,tint=Mint)};IconButton(onClick={delete(p)}){Icon(Icons.Rounded.DeleteOutline,null,tint=Color.Red)}}}}}
  }}
-@Composable fun EditorScreen(modifier:Modifier,p:MediaProject?,cues:List<Cue>,change:(List<Cue>)->Unit,addMedia:()->Unit,transcribe:()->Unit,export:()->Unit,language:String,setLanguage:(String)->Unit,busy:Boolean,progress:Int,status:String){
+@Composable fun EditorScreen(modifier:Modifier,p:MediaProject?,cues:List<Cue>,change:(List<Cue>)->Unit,addMedia:()->Unit,transcribe:()->Unit,export:()->Unit,translate:()->Unit,translating:Boolean,language:String,setLanguage:(String)->Unit,busy:Boolean,progress:Int,status:String){
  Column(modifier.fillMaxSize().padding(16.dp)){Text("Subtitle Editor",fontSize=27.sp,fontWeight=FontWeight.Bold)
  if(p==null){Text("Select a project or import audio.",color=Color.LightGray);Button(onClick=addMedia){Text("Import audio")}}
  else{
@@ -142,12 +183,12 @@ private fun saveProjects(c:Context,ps:List<MediaProject>){val a=JSONArray();ps.f
    Box(Modifier.weight(1f)){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth(),enabled=!busy){Text("Language: ${language.uppercase()}")};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){listOf("auto","th","en").forEach{code->DropdownMenuItem(text={Text(when(code){"auto"->"Auto detect";"th"->"Thai";else->"English"})},onClick={setLanguage(code);expanded=false})}}}
    Button(onClick=transcribe,modifier=Modifier.weight(1f),enabled=!busy){Icon(Icons.Rounded.AutoAwesome,null);Text(if(busy)" Working…" else " Transcribe")}
   }
-  if(busy){Text(status,color=Mint,fontSize=12.sp,modifier=Modifier.padding(top=8.dp));if(status.contains("Downloading"))LinearProgressIndicator(progress={progress/100f},modifier=Modifier.fillMaxWidth().padding(top=5.dp))else LinearProgressIndicator(modifier=Modifier.fillMaxWidth().padding(top=5.dp))}
+  if(busy){Text(status,color=Mint,fontSize=12.sp,modifier=Modifier.padding(top=8.dp));if(status.contains("Downloading")){LinearProgressIndicator(progress={progress/100f},modifier=Modifier.fillMaxWidth().padding(top=5.dp));Text("Model download: $progress%",color=Mint,fontSize=11.sp)}else LinearProgressIndicator(modifier=Modifier.fillMaxWidth().padding(top=5.dp))}
   Row(horizontalArrangement=Arrangement.spacedBy(8.dp),modifier=Modifier.padding(vertical=10.dp)){
    OutlinedButton(onClick={change(cues+Cue())},modifier=Modifier.weight(1f),enabled=!busy){Icon(Icons.Rounded.Add,null);Text(" Add line")}
    Button(onClick=export,modifier=Modifier.weight(1f),enabled=!busy&&cues.isNotEmpty()){Icon(Icons.Rounded.FileDownload,null);Text(" Export SRT")}
   }
-  LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)){items(cues.size){i->val c=cues[i];Surface(color=Panel,shape=RoundedCornerShape(14.dp)){Column(Modifier.fillMaxWidth().padding(12.dp)){
+  OutlinedButton(onClick=translate,modifier=Modifier.fillMaxWidth(),enabled=!busy&&!translating&&cues.isNotEmpty()){Text(if(translating)"Translating Chinese → Thai…" else "Translate all: Chinese → Thai")}\n  if(translating){LinearProgressIndicator(modifier=Modifier.fillMaxWidth().padding(bottom=8.dp));Text("Downloading translation model / translating…",color=Mint,fontSize=11.sp)}\n  LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)){items(cues.size){i->val c=cues[i];Surface(color=Panel,shape=RoundedCornerShape(14.dp)){Column(Modifier.fillMaxWidth().padding(12.dp)){
    Row(verticalAlignment=Alignment.CenterVertically){Text("LINE ${i+1}",color=Mint,modifier=Modifier.weight(1f));IconButton(onClick={if(cues.size>1)change(cues.filterIndexed{j,_->j!=i})},enabled=!busy){Icon(Icons.Rounded.Close,null,tint=Color.Red)}}
    OutlinedTextField(c.start,{v->change(cues.mapIndexed{j,x->if(j==i)x.copy(start=v)else x})},label={Text("Start (HH:MM:SS,mmm)")},modifier=Modifier.fillMaxWidth(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Ascii),enabled=!busy)
    OutlinedTextField(c.end,{v->change(cues.mapIndexed{j,x->if(j==i)x.copy(end=v)else x})},label={Text("End (HH:MM:SS,mmm)")},modifier=Modifier.fillMaxWidth(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Ascii),enabled=!busy)
