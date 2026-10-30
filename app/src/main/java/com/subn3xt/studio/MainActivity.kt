@@ -118,7 +118,7 @@ private suspend fun translateChineseToThai(text:String):String = suspendCoroutin
   val p=MediaProject(System.currentTimeMillis(),displayName(ctx,uri),uri.toString());projects=projects+p;saveProjects(ctx,projects);selected=p;cues=listOf(Cue());tab="Editor";notice="Audio imported"
  }}
  val exporter=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-subrip")){uri:Uri?->if(uri!=null)try{
-  val s=cues.mapIndexed{i,c->"${i+1}\n${c.start}\n${c.end}\n${c.text}\n"}.joinToString("\n")
+  val s=buildSrt(cues)
   ctx.contentResolver.openOutputStream(uri)?.use{it.write(s.toByteArray(Charsets.UTF_8))};notice="SRT exported"
  }catch(e:Exception){notice="Export error: ${e.message}"}}
  fun translateAll(){ if(cues.isEmpty()||translating)return; scope.launch {
@@ -152,7 +152,7 @@ private suspend fun translateChineseToThai(text:String):String = suspendCoroutin
   }}}){pad->when(tab){
    "Home"->HomeScreen(Modifier.padding(pad),projects.size){importAudio()}
    "Projects"->ProjectsScreen(Modifier.padding(pad),projects,{p->selected=p;cues=listOf(Cue());tab="Editor"},{importAudio()},{p->projects=projects.filterNot{it.id==p.id};saveProjects(ctx,projects);if(selected?.id==p.id)selected=null})
-   "Editor"->EditorScreen(Modifier.padding(pad),selected,cues,{cues=it},{importAudio()},{transcribe()},{translateAll()},translating,{exporter.launch((selected?.name?:"subtitles").substringBeforeLast('.')+".srt")},language,{language=it},busy,progress,status)
+   "Editor"->EditorScreen(Modifier.padding(pad),selected,cues,{cues=it},{importAudio()},{transcribe()},{exporter.launch((selected?.name?:"subtitles").substringBeforeLast('.')+".srt")},{translateAll()},translating,language,{language=it},busy,progress,status)
    else->Column(Modifier.padding(pad).fillMaxSize().padding(24.dp),verticalArrangement=Arrangement.Center,horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Rounded.Settings,null,tint=Mint,modifier=Modifier.size(48.dp));Text("SubN3xt Studio",fontSize=24.sp);Text("Whisper runs locally after model download.",color=Color.LightGray)}
   }}
   if(notice.isNotBlank()){LaunchedEffect(notice){kotlinx.coroutines.delay(3200);notice=""};Surface(color=Color(0xFF26334D),shape=RoundedCornerShape(12.dp),modifier=Modifier.padding(12.dp)){Text(notice,color=Color.White,modifier=Modifier.padding(14.dp))}}
