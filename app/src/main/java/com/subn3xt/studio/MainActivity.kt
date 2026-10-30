@@ -79,8 +79,7 @@ fun HomeScreen(modifier: Modifier = Modifier, onNew: () -> Unit) {
                         Icon(Icons.Rounded.AutoAwesome, null, tint = Mint, modifier = Modifier.padding(10.dp))
                     }
                     Spacer(Modifier.height(18.dp))
-                    Text("Turn video into
-beautiful subtitles.", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold, lineHeight = 31.sp)
+                    Text("Turn video into\\nbeautiful subtitles.", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold, lineHeight = 31.sp)
                     Spacer(Modifier.height(8.dp))
                     Text("Transcribe • Edit • Translate • Export", color = Color(0xFFC2C8E0), fontSize = 12.sp)
                     Spacer(Modifier.height(20.dp))
