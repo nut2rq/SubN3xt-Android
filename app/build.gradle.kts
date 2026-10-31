@@ -22,5 +22,6 @@ dependencies {
  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
  implementation("dev.ffmpegkit-maintained:whisper-android:1.0.0")
  implementation("com.google.mlkit:translate:17.0.3")
+ testImplementation("junit:junit:4.13.2")
  debugImplementation("androidx.compose.ui:ui-tooling")
 }
