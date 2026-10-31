@@ -47,7 +47,6 @@ import kotlin.coroutines.suspendCoroutine
 private val Ink=Color(0xFF0B1020); private val Panel=Color(0xFF151D31); private val Violet=Color(0xFF8B7CFF); private val Mint=Color(0xFF54E0C1)
 private const val MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true"
 data class MediaProject(val id:Long,val name:String,val uri:String)
-data class Cue(val start:String="00:00:00,000",val end:String="00:00:03,000",val text:String="")
 
 class MainActivity:ComponentActivity(){ override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState);setContent{SubN3xtApp(this)}} }
 
@@ -78,25 +77,6 @@ private suspend fun ensureModel(ctx:Context,onProgress:(Int)->Unit):File = withC
   if(!temp.renameTo(model))throw IllegalStateException("Could not save Whisper model")
   onProgress(100);model
  } catch(e:Exception){temp.delete();throw e} finally{connection?.disconnect()}
-}
-private fun msToSrt(ms:Long):String {val x=ms.coerceAtLeast(0);return "%02d:%02d:%02d,%03d".format(x/3600000,(x%3600000)/60000,(x%60000)/1000,x%1000)}
-private fun parseSrtTime(value:String):Long? {
- val m=Regex("^(\\d{2,}):(\\d{2}):(\\d{2})[,.](\\d{3})$").matchEntire(value.trim()) ?: return null
- val (h,mi,se,ms)=m.destructured
- val hh=h.toLongOrNull()?:return null; val mm=mi.toLongOrNull()?:return null
- val ss=se.toLongOrNull()?:return null; val milli=ms.toLongOrNull()?:return null
- if(mm>59||ss>59)return null
- return ((hh*3600+mm*60+ss)*1000+milli)
-}
-private fun buildSrt(cues:List<Cue>):String {
- require(cues.isNotEmpty()) { "No subtitle lines to export" }
- return cues.mapIndexed { index,cue ->
-  val start=parseSrtTime(cue.start) ?: throw IllegalArgumentException("Line ${index+1}: invalid start timestamp")
-  val end=parseSrtTime(cue.end) ?: throw IllegalArgumentException("Line ${index+1}: invalid end timestamp")
-  require(end>start) { "Line ${index+1}: end time must be after start time" }
-  require(cue.text.isNotBlank()) { "Line ${index+1}: subtitle text is empty" }
-  "${index+1}\\n${msToSrt(start)} --> ${msToSrt(end)}\\n${cue.text.trim()}\\n"
- }.joinToString("\\n")
 }
 private suspend fun translateChineseToThai(text:String):String = suspendCoroutine { continuation ->
  val translator=Translation.getClient(TranslatorOptions.Builder()
